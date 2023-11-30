@@ -52,15 +52,16 @@ class global_localization(Node):
         self.save_cur_odom_sub = self.create_subscription(Odometry,"Odometry",self.save_cur_odom_cb,1)
         self.map3d_sub = self.create_subscription(PointCloud2,"map3d",self.map3d_cb,1)
         self.get_logger().warning('Waiting for global map map3d......')
-        while not self.wait_for_map3d:
-            self.initialize_global_map(self.map3d)
+        while self.wait_for_map3d:
+            continue
+        self.initialize_global_map(self.map3d)
         while not self.initialized:
             self.get_logger().warning('Waiting for initial pose......')
             # 将欧拉角转换为四元数
             quat = tf2_py.transformations.quaternion_from_euler(0.0, 0.0, 0.0)
             xyz = [0.0, 0.0, 0.0]
             pose_msg = PoseWithCovarianceStamped()
-            pose_msg.pose.pose = Pose(Point(*xyz), quat)))
+            pose_msg.pose.pose = Pose(Point(*xyz), quat)
             pose_msg.header.stamp = self.clock.now()
             pose_msg.header.frame_id = 'map'
             self.initial_pos = self.pose_to_mat(pose_msg)
@@ -87,7 +88,7 @@ class global_localization(Node):
         self.cur_scan.points = o3d.utility.Vector3dVector(pc[:, :3])
 
     def msg_to_array(self,pc_msg):
-        pc_array = ros_numpy.numpify(pc_msg)
+        pc_array = ros2_numpy.numpify(pc_msg)
         pc = np.zeros([len(pc_array), 3])
         pc[:, 0] = pc_array['x']
         pc[:, 1] = pc_array['y']
@@ -173,7 +174,7 @@ class global_localization(Node):
         # 发布fov内点云
         header = self.cur_odom.header
         header.frame_id = 'map'
-        publish_point_cloud(pub_submap, header, np.array(global_map_in_FOV.points)[::10])
+        self.publish_point_cloud(pub_submap, header, np.array(global_map_in_FOV.points)[::10])
 
         return global_map_in_FOV       
 
@@ -197,7 +198,7 @@ class global_localization(Node):
         data['z'] = pc[:, 2]
         if pc.shape[1] == 4:
             data['intensity'] = pc[:, 3]
-        msg = ros_numpy.msgify(PointCloud2, data)
+        msg = ros2_numpy.msgify(PointCloud2, data)
         msg.header = header
         publisher.publish(msg)
 

@@ -50,12 +50,6 @@ def generate_launch_description():
         output='screen'
     )
     
-    global_node_test=  Node(
-        package='fast_lio',  # 替换为您的包名
-        executable='global_localization.py',  # 替换为您的节点名
-        output='screen'              # 输出到屏幕
-    )
-
     rviz_node = Node(
         package='rviz2',
         executable='rviz2',
