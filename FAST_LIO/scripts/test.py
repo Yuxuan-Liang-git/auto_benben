@@ -1,61 +1,59 @@
-import pyntcloud
 import rclpy
-from sensor_msgs.msg import PointCloud2
-import std_msgs.msg
-from pathlib import Path
-import os
+from geometry_msgs.msg import Pose, Quaternion
+from std_msgs.msg import Header
+from tf2_ros import TransformStamped
+import tf2_geometry_msgs
+import tf2_py as tf2
+import numpy as np
 
-# 获取当前文件的路径
-current_file_path = Path(__file__).resolve()
+def create_pose_with_quaternion():
+    # 创建 Quaternion
+    quaternion = Quaternion()
+    quaternion.x = 0.0
+    quaternion.y = 0.0
+    quaternion.z = 0.0
+    quaternion.w = 1.0  # 假设无旋转，因此 w 设置为 1.0
 
-# 获取上三级目录
-three_levels_up = current_file_path.parents[3]
+    # 创建 Pose
+    pose = Pose()
+    pose.orientation = quaternion
+    pose.position.x = 0.0
+    pose.position.y = 0.0
+    pose.position.z = 0.0
 
-# 定义文件名
-file_name = 'src/FAST_LIO/PCD/scans.pcd'  # 替换为实际的文件名
+    return pose
 
-# 使用 os.path.join 组合路径
-pcd_path = os.path.join(three_levels_up,file_name)
+def create_transform():
+    # 创建 TransformStamped
+    transform = TransformStamped()
+    transform.header = Header()
+    transform.header.stamp = rclpy.clock.Clock().now().to_msg()
+    transform.header.frame_id = 'map'
+    transform.child_frame_id = 'base_link'
+    transform.transform.translation.x = 0.0
+    transform.transform.translation.y = 1.0
+    transform.transform.translation.z = 0.0
+    transform.transform.rotation.x = 0.0
+    transform.transform.rotation.y = 0.0
+    transform.transform.rotation.z = 0.0
+    transform.transform.rotation.w = 1.0
 
+    return transform
 
-def pcd_to_pointcloud2(pcd):
-    header = std_msgs.msg.Header()
-    header.stamp = rclpy.clock.Clock().now().to_msg()
-    header.frame_id = "base_link"  # 修改为你的坐标系
+def main(args=None):
+    rclpy.init(args=args)
+    node = rclpy.create_node('tf_transform_example_node')
 
-    points = pcd.xyz
-    intensity = pcd.points["intensity"]  # 使用强度信息字段
+    original_pose = create_pose_with_quaternion()
+    transform = create_transform()
 
-    fields = [
-        PointCloud2.create_cloud_field('x', 0, PointCloud2.PointField.FLOAT32, 1),
-        PointCloud2.create_cloud_field('y', 4, PointCloud2.PointField.FLOAT32, 1),
-        PointCloud2.create_cloud_field('z', 8, PointCloud2.PointField.FLOAT32, 1),
-        PointCloud2.create_cloud_field('intensity', 12, PointCloud2.PointField.FLOAT32, 1),
-    ]
+    # 调用 do_transform_pose 函数
+    transformed_pose = tf2_geometry_msgs.do_transform_pose(original_pose, transform)
 
-    pc2 = PointCloud2.create_cloud_xyz32(header, fields, points)
-    pc2.header = header
-    pc2.height = 1
-    pc2.width = len(points)
+    # 打印结果
+    node.get_logger().info(f'Original Pose: {original_pose}')
+    node.get_logger().info(f'Transformed Pose: {transformed_pose}')
 
-    return pc2
-
-def main():
-    rclpy.init()
-
-    node = rclpy.create_node('pointcloud_publisher')
-
-    pcd = pyntcloud.PyntCloud.from_file(pcd_path)
-
-    publisher = node.create_publisher(PointCloud2, 'pointcloud_topic', 10)
-
-    while rclpy.ok():
-        pc2_msg = pcd_to_pointcloud2(pcd)
-        publisher.publish(pc2_msg)
-        node.get_logger().info('PointCloud published')
-        rclpy.spin_once(node)
-
-    node.destroy_node()
     rclpy.shutdown()
 
 if __name__ == '__main__':
