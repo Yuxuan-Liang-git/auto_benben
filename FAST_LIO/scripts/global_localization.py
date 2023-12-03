@@ -2,24 +2,18 @@
 import rclpy
 import numpy as np
 import sys
-
 import open3d as o3d 
 import time
 import tf2_ros
 import copy
-
 import ros2_numpy
 
+from scipy.spatial.transform import Rotation as R
 from rclpy.node import Node
 from rclpy.clock import Clock
 from sensor_msgs.msg import PointCloud2
-from geometry_msgs.msg import PoseWithCovarianceStamped, Pose, Point, Quaternion
+from geometry_msgs.msg import Pose, Quaternion
 from nav_msgs.msg import Odometry
-from std_msgs.msg import Bool
-
-from concurrent.futures import Future
-
-import tf2_geometry_msgs
 
 MAP_VOXEL_SIZE = 0.4
 # FOV(rad), modify this according to your LiDAR type
@@ -30,26 +24,32 @@ FOV_FAR = 70
 class GlobalLocalization(Node):
     def __init__(self,name):
         super().__init__(name)
-        self.curscan = None   
+        self.cur_scan = None   
+        self.cur_odom = None
+        self.initial_pose = None
         self.wait_for_global_map = True
+        self.clock = Clock()
         self.submap_pub = self.create_publisher(PointCloud2,'submap', 1)
         self.map_to_odom_pub = self.create_publisher(Odometry,'map_to_odom', 1)
-        self.localization_success_pub = self.create_publisher(Bool,'localization_success', 1)    
+        # self.pub_pc_in_map = self.create_publisher(PointCloud2,'cur_scan_in_map', 1)
+
+        self.submap_pub = self.create_publisher(PointCloud2,'/submap', 1)   
+
         self.save_cur_scan_sub = self.create_subscription(PointCloud2,"cloud_registered",self.save_cur_scan_cb,1)
         self.save_cur_odom_sub = self.create_subscription(Odometry,"Odometry",self.save_cur_odom_cb,1)
         self.map3d_sub = self.create_subscription(PointCloud2,"global_map",self.global_map_cb,10)
 
-
     def save_cur_scan_cb(self,pc_msg):
-        # 注意这里fastlio直接将scan转到odom系下了 不是lidar局部系
-        pc_msg.header.frame_id = 'camera_init'
-        pc_msg.header.stamp = self.clock.now()
-        self.pub_pc_in_map.publish(pc_msg)
-        # 转换为pcd
-        # fastlio给的field有问题 处理一下
-        pc_msg.fields = [pc_msg.fields[0], pc_msg.fields[1], pc_msg.fields[2],
-                        pc_msg.fields[4], pc_msg.fields[5], pc_msg.fields[6],
-                        pc_msg.fields[3], pc_msg.fields[7]]
+        # self.get_logger().info("Received Cloud Point!")   
+        # # 注意这里fastlio直接将scan转到odom系下了 不是lidar局部系
+        # pc_msg.header.frame_id = 'camera_init'
+        # pc_msg.header.stamp = self.clock.now()
+        # self.pub_pc_in_map.publish(pc_msg)
+        # # 转换为pcd
+        # # fastlio给的field有问题 处理一下
+        # pc_msg.fields = [pc_msg.fields[0], pc_msg.fields[1], pc_msg.fields[2],
+        #                 pc_msg.fields[4], pc_msg.fields[5], pc_msg.fields[6],
+        #                 pc_msg.fields[3], pc_msg.fields[7]]
         pc = self.msg_to_array(pc_msg)
 
         self.cur_scan = o3d.geometry.PointCloud()
@@ -64,6 +64,7 @@ class GlobalLocalization(Node):
         return pc
 
     def save_cur_odom_cb(self,odom_msg):
+        # self.get_logger().info("Get cur_odom from fast_lio!")   
         self.cur_odom = odom_msg
             
     def voxel_down_sample(self,pcd, voxel_size):
@@ -75,43 +76,80 @@ class GlobalLocalization(Node):
         return pcd_down
 
     def global_map_cb(self,global_map):
-        if self.wait_for_global_map:  
+        if self.wait_for_global_map: 
+            self.get_logger().info("Global map received!")   
             self.global_map = global_map
             global_map = o3d.geometry.PointCloud()
             global_map.points = o3d.utility.Vector3dVector(self.msg_to_array(self.global_map))
             global_map = self.voxel_down_sample(global_map, MAP_VOXEL_SIZE)
-            initial_pose = self.create_initial_pose_with_quaternion()
-            self.global_localize(initial_pose)
-            self.get_logger().info("Global_map received and localization_init!!")   
-            self.wait_for_global_map = False        
+            self.initial_pose = self.create_initial_pose_with_quaternion()
+            if self.cur_scan == None:
+                self.get_logger().warning("Can't receive first scan!!")         
+            else: 
+                self.global_localize(self.pose_to_mat(self.initial_pose))
+                self.get_logger().info("Localization_init!!")   
+                self.wait_for_global_map = False        
         
+    def odom_to_mat(self,odom):
+        # 创建一个4x4的单位矩阵
+        matrix = np.identity(4)
+
+        # 提取位姿消息的位置和四元数
+        pose = odom.pose.pose
+        position = pose.position
+        orientation = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
+
+        # 将位置信息填充到矩阵的前三列
+        matrix[0:3, 3] = [position.x, position.y, position.z]
+
+        # 计算旋转矩阵部分
+        rotation_matrix = R.from_quat(orientation).as_matrix()
+        
+        matrix[0:3, 0:3] = rotation_matrix[0:3, 0:3]
+
+        return matrix
+
     def pose_to_mat(self,pose):
         # 创建一个4x4的单位矩阵
         matrix = np.identity(4)
 
         # 提取位姿消息的位置和四元数
         position = pose.position
-        orientation = pose.orientation
+        orientation = [pose.orientation.x, pose.orientation.y, pose.orientation.z, pose.orientation.w]
 
         # 将位置信息填充到矩阵的前三列
         matrix[0:3, 3] = [position.x, position.y, position.z]
 
         # 计算旋转矩阵部分
-        rotation_matrix = tf2_py.transformations.quaternion_matrix([
-            orientation.x, orientation.y, orientation.z, orientation.w
-        ])
+        rotation_matrix = R.from_quat(orientation).as_matrix()
+        
         matrix[0:3, 0:3] = rotation_matrix[0:3, 0:3]
 
         return matrix
-
+    
     def global_localize(self,pose_estimation):
         self.get_logger().info("Global localization by scan-to-map matching......")    
-        # scan_tobe_mapped = copy.copy(self.cur_scan)
+        # TODO 这里注意线程安全
+        scan_tobe_mapped = copy.copy(self.cur_scan)
 
-    def crop_global_map_in_FOV(self):
+        tic = time.time()
+
+        global_map_in_FOV = self.crop_global_map_in_FOV(pose_estimation)
+
+        # # 粗配准
+        # transformation, _ = registration_at_scale(scan_tobe_mapped, global_map_in_FOV, initial=pose_estimation, scale=5)
+
+        # # 精配准
+        # transformation, fitness = registration_at_scale(scan_tobe_mapped, global_map_in_FOV, initial=transformation,
+        #                                                 scale=1)
+        # toc = time.time()
+        # rospy.loginfo('Time: {}'.format(toc - tic))
+        # rospy.loginfo('')
+
+    def crop_global_map_in_FOV(self, pose_estimation):
         # 当前scan原点的位姿
-        T_odom_to_base_link = self.pose_to_mat(self.cur_odom)
-        T_map_to_base_link = np.matmul(self.initial_pos, T_odom_to_base_link)
+        T_odom_to_base_link = self.odom_to_mat(self.cur_odom)
+        T_map_to_base_link = np.matmul(pose_estimation, T_odom_to_base_link)
         T_base_link_to_map = self.inverse_se3(T_map_to_base_link)
 
         # 把地图转换到lidar系下
@@ -119,30 +157,30 @@ class GlobalLocalization(Node):
         global_map_in_map = np.column_stack([global_map_in_map, np.ones(len(global_map_in_map))])
         global_map_in_base_link = np.matmul(T_base_link_to_map, global_map_in_map.T).T
 
-        # 将视角内的地图点提取出来
-        if FOV > 3.14:
-            # 环状lidar 仅过滤距离
-            indices = np.where(
-                (global_map_in_base_link[:, 0] < FOV_FAR) &
-                (np.abs(np.arctan2(global_map_in_base_link[:, 1], global_map_in_base_link[:, 0])) < FOV / 2.0)
-            )
-        else:
-            # 非环状lidar 保前视范围
-            # FOV_FAR>x>0 且角度小于FOV
-            indices = np.where(
-                (global_map_in_base_link[:, 0] > 0) &
-                (global_map_in_base_link[:, 0] < FOV_FAR) &
-                (np.abs(np.arctan2(global_map_in_base_link[:, 1], global_map_in_base_link[:, 0])) < FOV / 2.0)
-            )
-        global_map_in_FOV = o3d.geometry.PointCloud()
-        global_map_in_FOV.points = o3d.utility.Vector3dVector(np.squeeze(global_map_in_map[indices, :3]))
+        # # 将视角内的地图点提取出来
+        # if FOV > 3.14:  # 环状lidar 仅过滤距离
+        #     indices = np.where(
+        #         (global_map_in_base_link[:, 0] < FOV_FAR) &
+        #         (np.abs(np.arctan2(global_map_in_base_link[:, 1], global_map_in_base_link[:, 0])) < FOV / 2.0)
+        #     )
+        # else:  # 非环状lidar 保前视范围
+        #     indices = np.where(
+        #         (global_map_in_base_link[:, 0] > 0) &
+        #         (global_map_in_base_link[:, 0] < FOV_FAR) &
+        #         (np.abs(np.arctan2(global_map_in_base_link[:, 1], global_map_in_base_link[:, 0])) < FOV / 2.0)
+        #     )
 
-        # 发布fov内点云
-        header = self.cur_odom.header
-        header.frame_id = 'map'
-        self.publish_point_cloud(pub_submap, header, np.array(global_map_in_FOV.points)[::10])
+        # global_map_in_FOV = o3d.geometry.PointCloud()
+        # global_map_in_FOV.points = o3d.utility.Vector3dVector(np.squeeze(global_map_in_map[indices, :3]))
 
-        return global_map_in_FOV       
+        # # 发布fov内点云
+        # header = cur_odom.header
+        # header.frame_id = 'map'
+        # publish_point_cloud(pub_submap, header, np.array(global_map_in_FOV.points)[::10])
+
+        # return global_map_in_FOV   
+        
+        return None
 
     def inverse_se3(self,trans):
         trans_inverse = np.eye(4)
@@ -155,7 +193,7 @@ class GlobalLocalization(Node):
     def publish_point_cloud(self,publisher, header, pc):
         data = np.zeros(len(pc), dtype=[
             ('x', np.float32),
-            ('y', np.float32),pc_msg
+            ('y', np.float32),
             ('z', np.float32),
             ('intensity', np.float32),
         ])

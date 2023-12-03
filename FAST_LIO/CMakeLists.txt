@@ -134,7 +134,7 @@ install(
 # Install Python executables
 install(PROGRAMS
   scripts/global_localization.py
-  scripts/local_map_pub.py
+  scripts/global_map_pub.py
   DESTINATION lib/${PROJECT_NAME}
 )
 
