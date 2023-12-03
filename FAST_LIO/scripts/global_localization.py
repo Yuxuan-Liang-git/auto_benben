@@ -20,7 +20,7 @@ from std_msgs.msg import Bool
 
 from concurrent.futures import Future
 
-
+import pprint
 
 
 MAP_VOXEL_SIZE = 0.4
@@ -32,16 +32,7 @@ FOV_FAR = 70
 class global_localization(Node):
     def __init__(self,name):
         super().__init__(name)
-        self.curscan = None
-        self.cur_odom = None
-        self.map3d = None
-        self.global_map = None
-        # 实例化时钟
-        self.clock = Clock  
-        self.initialized = False
-        self.initial_pos = np.identity(4)
-        self.get_logger().info("Localization Node Inited...")     
-        self.pc_in_map_pub = self.create_publisher(PointCloud2,'cur_scan_in_map',1)
+        self.curscan = None   
         self.submap_pub = self.create_publisher(PointCloud2,'submap', 1)
         self.map_to_odom_pub = self.create_publisher(Odometry,'map_to_odom', 1)
         self.localization_success_pub = self.create_publisher(Bool,'localization_success', 1)    
@@ -79,12 +70,14 @@ class global_localization(Node):
         self.cur_scan.points = o3d.utility.Vector3dVector(pc[:, :3])
 
     def msg_to_array(self,pc_msg):
-        # pc_array = ros2_numpy.numpify(pc_msg)
-        # pc = np.zeros([len(pc_array), 3])
-        # pc[:, 0] = pc_array['x']
-        # pc[:, 1] = pc_array['y']
-        # pc[:, 2] = pc_array['z']
-        pc = np.array(list(read_points(pc_msg)))
+        pc_array = ros2_numpy.numpify(pc_msg)
+        # pprint.pprint(pc_array)
+        pc = np.zeros([len(pc_array['xyz']), 3])
+        pc[:, 0] = pc_array['xyz'][:, 0]
+        pc[:, 1] = pc_array['xyz'][:, 1]
+        pc[:, 2] = pc_array['xyz'][:, 2]
+
+        # pc = np.array(list(read_points(pc_msg)))
         return pc
 
 
@@ -94,7 +87,7 @@ class global_localization(Node):
     def initialize_global_map(self,pc_msg):
         self.get_logger().info('initialize_global_map')
         global_map = o3d.geometry.PointCloud()
-        global_map.points = o3d.utility.Vector3dVector(self.msg_to_array(pc_msg)[:, :3])
+        global_map.points = o3d.utility.Vector3dVector(self.msg_to_array(pc_msg))
         global_map = self.voxel_down_sample(global_map, MAP_VOXEL_SIZE)
         self.get_logger().info('Global map received.')
             

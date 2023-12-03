@@ -21,7 +21,7 @@ pcd_path = os.path.join(three_levels_up,file_name)
 class PCDPublisherNode(Node):
     def __init__(self):
         super().__init__('pcd_publisher')
-        self.publisher = self.create_publisher(PointCloud2, 'pcd_topic', 10)
+        self.publisher = self.create_publisher(PointCloud2, 'map3d', 10)
         self.timer = self.create_timer(1.0, self.timer_callback)  # Set the timer interval (1.0 second in this example)
         self.pcd_path = pcd_path
     def timer_callback(self):
