@@ -1,8 +1,9 @@
 #include "global_localization.h"
 
-GlobalLocalization::GlobalLocalization(): Node("localization_node") {
+GlobalLocalization::GlobalLocalization(): Node("localization_node")
+{
+    
     // 创建发布者
-    pub_pc_in_map = this->create_publisher<sensor_msgs::msg::PointCloud2>("/cur_scan_in_map", 1);
     pub_submap = this->create_publisher<sensor_msgs::msg::PointCloud2>("/submap", 1);
     pub_map_to_odom = this->create_publisher<nav_msgs::msg::Odometry>("/map_to_odom", 1);
     localization_success_pub = this->create_publisher<std_msgs::msg::Bool>("/localization_success", 1);
@@ -12,15 +13,19 @@ GlobalLocalization::GlobalLocalization(): Node("localization_node") {
         "/cloud_registered", 1, std::bind(&GlobalLocalization::cb_save_cur_scan, this, std::placeholders::_1));
     sub_odometry = this->create_subscription<nav_msgs::msg::Odometry>(
         "/Odometry", 1, std::bind(&GlobalLocalization::cb_save_cur_odom, this, std::placeholders::_1));
-    std::cout << "Succeed!" << std::endl;
+    RCLCPP_INFO(this->get_logger(), "Create pub&sub Succeed");
 }
 GlobalLocalization::~GlobalLocalization()
 {
 }
 
     // 回调函数
-void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr msg) {
+void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr pc_msg) {
     // 处理接收到的PointCloud2消息
+    // 将ROS的PointCloud2转换为PCL的PointCloud并存储在类内
+    RCLCPP_INFO(this->get_logger(), "PointCloud Received!!");   
+    pcl::fromROSMsg(*pc_msg, cur_scan_pc);
+
 }
 
 void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg) {
