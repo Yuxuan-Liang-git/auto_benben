@@ -9,6 +9,7 @@ ADD_COMPILE_OPTIONS(-std=c++14)
 ADD_COMPILE_OPTIONS(-std=c++14)
 set(CMAKE_CXX_FLAGS "-std=c++14 -O3")
 
+set(ROOT_DIR ${CMAKE_SOURCE_DIR})
 add_definitions(-DROOT_DIR=\"${CMAKE_CURRENT_SOURCE_DIR}/\")
 add_definitions(${PCL_DEFINITIONS})
 link_directories(${PCL_LIBRARY_DIRS})
