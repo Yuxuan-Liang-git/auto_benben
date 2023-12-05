@@ -33,8 +33,7 @@ private:
     void global_pc_init();
     pcl::PointCloud<pcl::PointNormal>::Ptr cur_scan_pc;
     pcl::PointCloud<pcl::PointNormal>::Ptr global_pc;
-
-  
+    Eigen::Affine3f T_map_to_odom = Eigen::Affine3f::Identity();
 
     // 发布者
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_submap;

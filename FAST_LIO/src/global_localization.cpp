@@ -26,7 +26,7 @@ GlobalLocalization::~GlobalLocalization()
 void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr pc_msg) {
     // 处理接收到的PointCloud2消息
     // 将ROS的PointCloud2转换为PCL的PointCloud并存储在类内
-    RCLCPP_INFO(this->get_logger(), "PointCloud Received!!");   
+    // RCLCPP_INFO(this->get_logger(), "PointCloud Received!!");   
     pcl::PointCloud<pcl::PointNormal>::Ptr cur_scan_pc (new pcl::PointCloud<pcl::PointNormal>);
     pcl::fromROSMsg(*pc_msg, *cur_scan_pc);
 
@@ -34,6 +34,10 @@ void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::S
 
 void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg) {
     // 处理接收到的Odometry消息
+    RCLCPP_INFO(this->get_logger(),"Odometry received!");
+    T_map_to_odom.translation() << 
+        msg->pose.pose.position.x,msg->pose.pose.position.y,msg->pose.pose.position.z;
+
 }
 
 void GlobalLocalization::global_pc_init()
