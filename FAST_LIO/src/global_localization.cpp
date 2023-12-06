@@ -31,11 +31,10 @@ GlobalLocalization::~GlobalLocalization()
 // 滤去可视范围外保存的点云
 void GlobalLocalization::get_global_map_in_FOV()
 {
-    RCLCPP_INFO(this->get_logger(),"0000");
+    std::cout << T_map_to_odom.matrix() << std::endl;
     // 将保存的点云转到lidar坐标系下
     pcl::PointCloud<pcl::PointNormal>::Ptr temp_pc(new pcl::PointCloud<pcl::PointNormal> ());
     pcl::transformPointCloudWithNormals(*global_pc, *temp_pc, T_map_to_odom);
-    RCLCPP_INFO(this->get_logger(),"1111");
 	//创建条件限定下的滤波器
 	pcl::ConditionAnd<pcl::PointNormal>::Ptr range_cond(new pcl::ConditionAnd<pcl::PointNormal>());//创建条件定义对象range_cond
 	//为条件定义对象添加比较算子
@@ -52,15 +51,11 @@ void GlobalLocalization::get_global_map_in_FOV()
 	cr.setCondition(range_cond);			//用条件定义对象初始化
 	cr.setInputCloud(temp_pc);			//设置待滤波点云
 	cr.setKeepOrganized(false);			//保持点云结构，即有序点云经过滤波后，仍能够保持有序性。(是否保留无效点云数据的位置信息)
-    RCLCPP_INFO(this->get_logger(),"2222");
 	cr.filter(*global_pc_in_FOV);				//执行滤波，保存滤波结果于cloud_filtered
-    RCLCPP_INFO(this->get_logger(),"3333");
     sensor_msgs::msg::PointCloud2 laserCloudmsg;
     pcl::toROSMsg(*global_pc_in_FOV, laserCloudmsg);
-    RCLCPP_INFO(this->get_logger(),"4444");
     laserCloudmsg.header.stamp = this->get_clock()->now();
     laserCloudmsg.header.frame_id = "body";
-
     pub_submap->publish(laserCloudmsg);
 }
    
@@ -95,7 +90,7 @@ void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedP
     if(!odom_received_){
         odom_received_ = true;
         RCLCPP_INFO(this->get_logger(),"Odometry received!");
-        // std::cout << T_map_to_odom.matrix() << std::endl;
+
     }
 }
 
@@ -115,7 +110,8 @@ void GlobalLocalization::global_pc_init()
     pcl::PCDReader pcd_reader;
     pcl::PCLPointCloud2::Ptr temp_pc (new pcl::PCLPointCloud2 ());
     pcl::PCLPointCloud2::Ptr temp_filtered_pc (new pcl::PCLPointCloud2 ());
-    pcl::PointCloud<pcl::PointNormal>::Ptr global_pc (new pcl::PointCloud<pcl::PointNormal> ());
+    global_pc = std::make_shared<pcl::PointCloud<pcl::PointNormal>>();
+    global_pc_in_FOV = std::make_shared<pcl::PointCloud<pcl::PointNormal>>();
 
     if (pcd_reader.read(all_points_dir,*temp_pc) != 0)  {
         RCLCPP_ERROR(this->get_logger(), "Error loading point cloud: %s", file_name.c_str());
