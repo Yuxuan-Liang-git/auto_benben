@@ -1,364 +1,223 @@
-#include <limits>
-#include <fstream>
-#include <vector>
+#include <pcl/io/pcd_io.h>
+#include <ctime>
 #include <Eigen/Core>
 #include <pcl/point_types.h>
 #include <pcl/point_cloud.h>
-#include <pcl/io/pcd_io.h>
-#include <pcl/kdtree/kdtree_flann.h>
-#include <pcl/filters/passthrough.h>
-#include <pcl/filters/voxel_grid.h>
-#include <pcl/features/normal_3d.h>
 #include <pcl/features/fpfh.h>
+#include <pcl/io/pcd_io.h>
+#include <pcl/io/ply_io.h>
 #include <pcl/registration/ia_ransac.h>
-#include <pcl/visualization/cloud_viewer.h>
-#include <pcl/search/impl/search.hpp>
+#include <pcl/features/normal_3d.h>
+#include <pcl/kdtree/kdtree_flann.h>
+#include <pcl/visualization/pcl_visualizer.h>
+#include <boost/thread/thread.hpp>
+#include <pcl/features/fpfh_omp.h> //包含fpfh加速计算的omp(多核并行计算)
+#include <pcl/registration/correspondence_estimation.h>
+#include <pcl/registration/correspondence_rejection_features.h> //特征的错误对应关系去除
+#include <pcl/registration/correspondence_rejection_sample_consensus.h> //随机采样一致性去除
+#include <pcl/filters/voxel_grid.h>
+#include <pcl/filters/approximate_voxel_grid.h>
 
-typedef pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> PCLHandler;
 
-class FeatureCloud {
-public:
-    // A bit of shorthand
-    typedef pcl::PointCloud<pcl::PointXYZ> PointCloud;
-    typedef pcl::PointCloud<pcl::Normal> SurfaceNormals;
-    typedef pcl::PointCloud<pcl::FPFHSignature33> LocalFeatures;
-    typedef pcl::search::KdTree<pcl::PointXYZ> SearchMethod;
+using namespace std;
+typedef pcl::PointCloud<pcl::PointXYZ> pointcloud;
+typedef pcl::PointCloud<pcl::Normal> pointnormal;
+typedef pcl::PointCloud<pcl::FPFHSignature33> fpfhFeature;
 
-    FeatureCloud() :
-            search_method_xyz_(new SearchMethod),
-            normal_radius_(0.02f),
-            feature_radius_(0.02f) {}
+fpfhFeature::Ptr compute_fpfh_feature(pointcloud::Ptr input_cloud, pcl::search::KdTree<pcl::PointXYZ>::Ptr tree)
+{
+	//法向量
+	pointnormal::Ptr point_normal(new pointnormal);
+	pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> est_normal;
+	est_normal.setInputCloud(input_cloud);
+	est_normal.setSearchMethod(tree);
+	est_normal.setKSearch(10);
+	//est_normal.setRadiusSearch(0.03); 
+    est_normal.compute(*point_normal);//计算法向量
 
-    ~FeatureCloud() {}
+	//fpfh 估计
+	fpfhFeature::Ptr fpfh(new fpfhFeature);
+	//pcl::FPFHEstimation<pcl::PointXYZ,pcl::Normal,pcl::FPFHSignature33> est_target_fpfh;
+	pcl::FPFHEstimationOMP<pcl::PointXYZ, pcl::Normal, pcl::FPFHSignature33> est_fpfh;
+	est_fpfh.setNumberOfThreads(8); //指定4核计算
+	// pcl::search::KdTree<pcl::PointXYZ>::Ptr tree4 (new pcl::search::KdTree<pcl::PointXYZ> ());
+	est_fpfh.setInputCloud(input_cloud);
+	est_fpfh.setInputNormals(point_normal);
+	est_fpfh.setSearchMethod(tree);
+	est_fpfh.setKSearch(10);
+	//est_fpfh.setRadiusSearch(0.08); 
+	est_fpfh.compute(*fpfh);
 
-    // Process the given cloud
-    void
-    setInputCloud(PointCloud::Ptr xyz) {
-        xyz_ = xyz;
-        processInput();
+	return fpfh;
+
+}
+
+pointcloud::Ptr voxelGrid(pointcloud::Ptr cloud_in)
+{
+    pointcloud::Ptr cloud_out(new pcl::PointCloud<pcl::PointXYZ>);
+    //down sample
+    std::cout << "begin downSample, cloud size: " << cloud_in->size() << std::endl;
+    pcl::VoxelGrid<pcl::PointXYZ> downSampled;  //创建滤波对象
+    downSampled.setInputCloud(cloud_in);            //设置需要过滤的点云给滤波对象
+    downSampled.setLeafSize(0.5f, 0.5f, 0.5f);  //设置滤波时创建的体素体积为1cm的立方体（1为米，0.01就是1cm）
+    downSampled.filter(*cloud_out);  //执行滤波处理，存储输出
+    std::cout << "success downSample, cloud size: " << cloud_out->size() << std::endl;
+    return cloud_out;
+}
+
+int main(int argc, char** argv)
+{
+    clock_t start, end, time;
+	start = clock();
+	pcl::PointCloud<pcl::PointXYZ>::Ptr source(new pcl::PointCloud<pcl::PointXYZ>);
+	pcl::PointCloud<pcl::PointXYZ>::Ptr target(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr source_voxel(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr target_voxel(new pcl::PointCloud<pcl::PointXYZ>);
+    pcl::PointCloud<pcl::PointXYZ>::Ptr source_align(new pcl::PointCloud<pcl::PointXYZ>);
+//    pcl::io::loadPLYFile ("1.ply", *source);
+//    pcl::io::loadPLYFile ("2.ply", *target);
+//    pcl::io::loadPCDFile<pcl::PointXYZ>("1.pcd", *source);
+//    pcl::io::loadPCDFile<pcl::PointXYZ>("2.pcd", *target);
+
+
+    if(argc != 3)
+    {
+        cerr<<"输入点云数量不对!"<<endl;
+        exit(1);
     }
 
-    // Load and process the cloud in the given PCD file
-    void
-    loadInputCloud(const std::string &pcd_file) {
-        xyz_ = PointCloud::Ptr(new PointCloud);
-        pcl::io::loadPCDFile(pcd_file, *xyz_);
-        processInput();
+    string input_filename = argv[1];
+    string output_filename = argv[2];
+
+    std::string format = input_filename.substr(input_filename.length()-4, 4);
+    //std::cout<<"pointcloud format:"<<format<<std::endl;
+    if(format == ".ply")
+    {
+        pcl::io::loadPLYFile(input_filename, *source);
+        pcl::io::loadPLYFile(output_filename, *target);
+    }
+    else if(format == ".pcd")
+    {
+        pcl::io::loadPCDFile(input_filename, *source);
+        pcl::io::loadPCDFile(output_filename, *target);
     }
 
-    // Get a pointer to the cloud 3D points
-    PointCloud::Ptr
-    getPointCloud() const {
-        return (xyz_);
+    std:vector<int> index;
+	pcl::removeNaNFromPointCloud(*source, *source, index);
+	pcl::removeNaNFromPointCloud(*target, *target, index);
+
+    //先对原始点云进行简化，对简化后的数据做配准计算, 将所获得的配准参数应用到原始点云，以提高计算效率
+    source_voxel = voxelGrid(source);
+    target_voxel = voxelGrid(target);
+
+	pcl::search::KdTree<pcl::PointXYZ>::Ptr tree(new pcl::search::KdTree<pcl::PointXYZ>());
+
+    //计算滤波后的特征点
+    fpfhFeature::Ptr source_fpfh = compute_fpfh_feature(source_voxel, tree);
+    fpfhFeature::Ptr target_fpfh = compute_fpfh_feature(target_voxel, tree);
+//    end = clock();
+//    cout << "calculate time is: " << float(end - start) / CLOCKS_PER_SEC << endl;
+
+	//对齐(占用了大部分运行时间)
+	pcl::SampleConsensusInitialAlignment<pcl::PointXYZ, pcl::PointXYZ, pcl::FPFHSignature33> sac_ia;
+    sac_ia.setInputSource(source_voxel);
+	sac_ia.setSourceFeatures(source_fpfh);
+    sac_ia.setInputTarget(target_voxel);
+    sac_ia.setTargetFeatures(target_fpfh);
+    pointcloud::Ptr align(new pointcloud);//对齐后的点云
+
+    //对齐参数设置
+//    sac_ia.setNumberOfSamples(20);//设置每次迭代计算中使用的样本数量（可省）,可节省时间
+//    sac_ia.setCorrespondenceRandomness(50);//设置计算协方差时选择多少近邻点，该值越大，协防差越精确，但是计算效率越低.(可省)
+//    //sac_ia.setMaximumIterations(100);
+//    sac_ia.setEuclideanFitnessEpsilon(0.001);
+//    sac_ia.setTransformationEpsilon(1e-10);
+//    sac_ia.setRANSACIterations(30);
+
+	sac_ia.align(*align);
+    cout <<"has converged: "<< sac_ia.hasConverged() <<"\tscore: "<<sac_ia.getFitnessScore()<< endl;
+
+    end = clock();
+    cout << "calculate time is: " << float(end - start) / CLOCKS_PER_SEC << endl;
+
+//    Eigen::Matrix4f T = sac_ia.getFinalTransformation ();
+//    cout<<"T:"<<endl;
+//    cout << T <<endl;
+
+    //通过变换矩阵计算旋转矩阵和平移向量
+    Eigen::Matrix4d T(4,4);
+    T= sac_ia.getFinalTransformation().cast<double> ();//getFinalTransformation()输出的是float 转成double
+    //cout << T.block<3,3>(0,0) << endl << endl;
+    Eigen::Matrix3d R = T.block<3,3>(0,0);// = Eigen::Matrix3f::Identity();
+    Eigen::Quaterniond q = Eigen::Quaterniond(R);
+    //cout<<"R = \n"<<R<<endl;
+    cout<<"Quaternion = \n"<<q.coeffs().transpose()<<endl;
+
+    Eigen::MatrixXd t_mat  = T.topRightCorner(3, 1).transpose();
+    Eigen::Vector3d t;
+    t<<t_mat(0), t_mat(1), t_mat(2);
+    cout<<"t = "<<endl<<t.transpose()<<endl;
+
+    ofstream outfile("Transform.txt");
+    if(!outfile)
+    {
+        cerr<<"open error!"<<endl;
+        exit(1);
     }
+    outfile<<"T:"<<endl<<T<<endl;
+    outfile<<"q:"<<endl<<q.coeffs().transpose()<<endl;
+    outfile<<"t:"<<endl<<t.transpose()<<endl;
+    outfile.close();
 
-    // Get a pointer to the cloud of 3D surface normals
-    SurfaceNormals::Ptr
-    getSurfaceNormals() const {
-        return (normals_);
-    }
+    pcl::transformPointCloud(*source, *source_align, T);
 
-    // Get a pointer to the cloud of feature descriptors
-    LocalFeatures::Ptr
-    getLocalFeatures() const {
-        return (features_);
-    }
+    //将对齐后的点云保存
+    pcl::io::savePCDFile("source_align.pcd", *source_align, false);
+    //pcl::io::savePCDFile("align.pcd", *align, false);//结果是滤波后的
 
-protected:
-    // Compute the surface normals and local features
-    void
-    processInput() {
-        computeSurfaceNormals();
-        computeLocalFeatures();
-    }
+    //设置特征点对的关系
+    pcl::registration::CorrespondenceEstimation<pcl::FPFHSignature33,pcl::FPFHSignature33> crude_cor_est;
+    boost::shared_ptr<pcl::Correspondences> cru_correspondences (new pcl::Correspondences);//FPFP的点对的对应关系
+    crude_cor_est.setInputSource(source_fpfh);
+    crude_cor_est.setInputTarget(target_fpfh);
+    //crude_cor_est.determineCorrespondences(*cru_correspondences);
+    crude_cor_est.determineReciprocalCorrespondences(*cru_correspondences);
+    cout<<"crude size is:"<<cru_correspondences->size()<<endl;
 
-    // Compute the surface normals
-    void
-    computeSurfaceNormals() {
-        // 创建表面法向量
-        normals_ = SurfaceNormals::Ptr(new SurfaceNormals);
+	//可视化
+	boost::shared_ptr<pcl::visualization::PCLVisualizer> view(new pcl::visualization::PCLVisualizer("fpfh test"));
+	int v1;
+	int v2;
+	
+	view->createViewPort(0, 0.0, 0.5, 1.0, v1);
+	view->createViewPort(0.5, 0.0, 1.0, 1.0, v2);
+	view->setBackgroundColor(0, 0, 0, v1);
+	view->setBackgroundColor(0.05, 0, 0, v2);
+	pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> sources_cloud_color(source, 250, 0, 0);
+    view->addPointCloud(source, sources_cloud_color, "sources_cloud_v1", v1);
+	pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ> target_cloud_color(target, 0, 250, 0);
+    view->addPointCloud(target, target_cloud_color, "target_cloud_v1", v1);
+    //设置点的大小为2
+	view->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "sources_cloud_v1");
+    view->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "target_cloud_v1");
 
-        // 计算表面法向量
-        pcl::NormalEstimation<pcl::PointXYZ, pcl::Normal> norm_est;
-        norm_est.setInputCloud(xyz_);
-        norm_est.setSearchMethod(search_method_xyz_);
-        norm_est.setRadiusSearch(normal_radius_);
-        norm_est.compute(*normals_);
-    }
+    //v2
+    //pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ>aligend_cloud_color(align, 255, 0, 0);
+    //pcl::visualization::PointCloudColorHandlerCustom<pcl::PointXYZ>aligend_cloud_color(final, 255, 0, 0);
 
-    // Compute the local feature descriptors
-    /**
-     * 根据表面法向量 计算本地特征描述
-     */
-    void
-    computeLocalFeatures() {
-        features_ = LocalFeatures::Ptr(new LocalFeatures);
+    view->addPointCloud(source_align, sources_cloud_color, "aligend_cloud_v2", v2);
+    view->addPointCloud(target, target_cloud_color, "target_cloud_v2", v2);
+    view->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "aligend_cloud_v2");
+    view->setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "target_cloud_v2");
 
-        pcl::FPFHEstimation<pcl::PointXYZ, pcl::Normal, pcl::FPFHSignature33> fpfh_est;
-        fpfh_est.setInputCloud(xyz_);
-        fpfh_est.setInputNormals(normals_);
-        fpfh_est.setSearchMethod(search_method_xyz_);
-        fpfh_est.setRadiusSearch(feature_radius_);
-        fpfh_est.compute(*features_);
-    }
+    view->addCorrespondences<pcl::PointXYZ>(source,target,*cru_correspondences,"correspondence",v1);//添加显示对应点对
+    //view->addCorrespondences<pcl::PointXYZ>(source_align,target,*cru_correspondences,"correspondence",v2);
+	while (!view->wasStopped())
+	{
+		// view->spin();
+		view->spinOnce(100);
+		boost::this_thread::sleep(boost::posix_time::microseconds(100000));
+	}
 
-private:
-    // Point cloud data
-    PointCloud::Ptr xyz_;
-    SurfaceNormals::Ptr normals_;
-    LocalFeatures::Ptr features_; // 快速点特征直方图 Fast Point Feature Histogram
-    SearchMethod::Ptr search_method_xyz_; // KDTree方法查找邻域
-
-    // Parameters
-    float normal_radius_;
-    float feature_radius_;
-};
-
-class TemplateAlignment {
-public:
-
-    // A struct for storing alignment results
-    struct Result {
-        // 匹配分数
-        float fitness_score;
-        // 转换矩阵
-        Eigen::Matrix4f final_transformation;
-
-        EIGEN_MAKE_ALIGNED_OPERATOR_NEW
-    };
-
-    TemplateAlignment() :
-            min_sample_distance_(0.05f),
-            max_correspondence_distance_(0.01f * 0.01f),
-            nr_iterations_(500) {
-        // Intialize the parameters in the Sample Consensus Intial Alignment (SAC-IA) algorithm
-        sac_ia_.setMinSampleDistance(min_sample_distance_);
-        sac_ia_.setMaxCorrespondenceDistance(max_correspondence_distance_);
-        sac_ia_.setMaximumIterations(nr_iterations_);
-    }
-
-    ~TemplateAlignment() {}
-
-    // Set the given cloud as the target to which the templates will be aligned
-    void
-    setTargetCloud(FeatureCloud &target_cloud) {
-        target_ = target_cloud;
-        // 设置输入target点云
-        sac_ia_.setInputTarget(target_cloud.getPointCloud());
-        // 设置特征target
-        sac_ia_.setTargetFeatures(target_cloud.getLocalFeatures());
-    }
-
-    // Add the given cloud to the list of template clouds
-    void
-    addTemplateCloud(FeatureCloud &template_cloud) {
-        templates_.push_back(template_cloud);
-    }
-
-    // Align the given template cloud to the target specified by setTargetCloud ()
-    // 对齐的核心代码
-    void
-    align(FeatureCloud &template_cloud, TemplateAlignment::Result &result) {
-        // 设置输入源
-        sac_ia_.setInputSource(template_cloud.getPointCloud());
-        // 设置特征源
-        sac_ia_.setSourceFeatures(template_cloud.getLocalFeatures());
-
-        pcl::PointCloud<pcl::PointXYZ> registration_output;
-        sac_ia_.align(registration_output);
-
-        // 根据最远相应距离计算匹配分数
-        result.fitness_score = (float) sac_ia_.getFitnessScore(max_correspondence_distance_);
-        // 获取最终转换矩阵
-        result.final_transformation = sac_ia_.getFinalTransformation();
-    }
-
-    // Align all of template clouds set by addTemplateCloud to the target specified by setTargetCloud ()
-    void
-    alignAll(std::vector<TemplateAlignment::Result, Eigen::aligned_allocator<Result> > &results) {
-        results.resize(templates_.size());
-        for (size_t i = 0; i < templates_.size(); ++i) {
-            align(templates_[i], results[i]);
-        }
-    }
-
-    // Align all of template clouds to the target cloud to find the one with best alignment score
-    int
-    findBestAlignment(TemplateAlignment::Result &result) {
-        // Align all of the templates to the target cloud
-        std::vector<Result, Eigen::aligned_allocator<Result> > results;
-        alignAll(results);
-
-        // Find the template with the best (lowest) fitness score
-        float lowest_score = std::numeric_limits<float>::infinity();
-        int best_template = 0;
-        for (size_t i = 0; i < results.size(); ++i) {
-            const Result &r = results[i];
-            if (r.fitness_score < lowest_score) {
-                lowest_score = r.fitness_score;
-                best_template = (int) i;
-            }
-        }
-
-        // Output the best alignment
-        result = results[best_template];
-        return (best_template);
-    }
-
-private:
-    // A list of template clouds and the target to which they will be aligned
-    std::vector<FeatureCloud> templates_;
-    FeatureCloud target_;
-
-    // The Sample Consensus Initial Alignment (SAC-IA) registration routine and its parameters
-    pcl::SampleConsensusInitialAlignment<pcl::PointXYZ, pcl::PointXYZ, pcl::FPFHSignature33> sac_ia_;
-    float min_sample_distance_;
-    float max_correspondence_distance_;
-    int nr_iterations_;
-};
-
-/**
- * 对齐对象模板集合到一个示例点云
- * 调用命令格式 ./template_alignment2 ./data/object_templates.txt ./data/person.pcd
- *                  程序                          多个模板的文本文件         目标点云
- * 调用命令格式 ./template_alignment2 ./data/object_templates2.txt ./data/target.pcd
- *                  程序                          多个模板的文本文件         目标点云
- *
- * 实时的拍照得到RGB和深度图
- * 合成目标点云图
- * 通过直通滤波框定范围（得到感兴趣区域）
- * 将感兴趣区域进行降采样（提高模板匹配效率）
- */
-int main(int argc, char **argv) {
-    if (argc < 3) {
-        printf("No target PCD file given!\n");
-        return (-1);
-    }
-
-    // Load the object templates specified in the object_templates.txt file
-    std::vector<FeatureCloud> object_templates;
-    std::ifstream input_stream(argv[1]);
-    object_templates.resize(0);
-    std::string pcd_filename;
-    while (input_stream.good()) {
-        // 按行读取模板中的文件名
-        std::getline(input_stream, pcd_filename);
-        if (pcd_filename.empty() || pcd_filename.at(0) == '#') // Skip blank lines or comments
-            continue;
-
-        // 加载特征云
-        FeatureCloud template_cloud;
-        template_cloud.loadInputCloud(pcd_filename);
-        object_templates.push_back(template_cloud);
-    }
-    input_stream.close();
-
-    // Load the target cloud PCD file
-    pcl::PointCloud<pcl::PointXYZ>::Ptr cloud(new pcl::PointCloud<pcl::PointXYZ>);
-    pcl::io::loadPCDFile(argv[2], *cloud);
-
-    // Preprocess the cloud by...
-    // ...removing distant points 移除远处的点云
-    const float depth_limit = 1.0;
-    pcl::PassThrough<pcl::PointXYZ> pass;
-    pass.setInputCloud(cloud);
-    pass.setFilterFieldName("z");
-    pass.setFilterLimits(0, depth_limit);
-    pass.filter(*cloud);
-
-    // ... and downsampling the point cloud 降采样点云, 减少计算量
-    // 定义体素大小 5mm
-    const float voxel_grid_size = 0.005f;
-    pcl::VoxelGrid<pcl::PointXYZ> vox_grid;
-    vox_grid.setInputCloud(cloud);
-    // 设置叶子节点的大小lx, ly, lz
-    vox_grid.setLeafSize(voxel_grid_size, voxel_grid_size, voxel_grid_size);
-    //vox_grid.filter (*cloud); // Please see this http://www.pcl-developers.org/Possible-problem-in-new-VoxelGrid-implementation-from-PCL-1-5-0-td5490361.html
-    pcl::PointCloud<pcl::PointXYZ>::Ptr tempCloud(new pcl::PointCloud<pcl::PointXYZ>);
-    vox_grid.filter(*tempCloud);
-    cloud = tempCloud;
-
-    // 保存滤波&降采样后的点云图
-    pcl::io::savePCDFileBinary("pass_through_voxel.pcd", *tempCloud);
-    std::cout << "pass_through_voxel.pcd saved" << std::endl;
-
-    // Assign to the target FeatureCloud 对齐到目标特征点云
-    FeatureCloud target_cloud;
-    target_cloud.setInputCloud(cloud);
-
-    // Set the TemplateAlignment inputs
-    TemplateAlignment template_align;
-    for (size_t i = 0; i < object_templates.size(); i++) {
-        FeatureCloud &object_template = object_templates[i];
-        // 添加模板点云
-        template_align.addTemplateCloud(object_template);
-    }
-    // 设置目标点云
-    template_align.setTargetCloud(target_cloud);
-
-
-    std::cout << "findBestAlignment" << std::endl;
-    // Find the best template alignment
-    // 核心代码
-    TemplateAlignment::Result best_alignment;
-    int best_index = template_align.findBestAlignment(best_alignment);
-    const FeatureCloud &best_template = object_templates[best_index];
-
-    // Print the alignment fitness score (values less than 0.00002 are good)
-    printf("Best fitness score: %f\n", best_alignment.fitness_score);
-    printf("Best fitness best_index: %d\n", best_index);
-
-    // Print the rotation matrix and translation vector
-    Eigen::Matrix3f rotation = best_alignment.final_transformation.block<3, 3>(0, 0);
-    Eigen::Vector3f translation = best_alignment.final_transformation.block<3, 1>(0, 3);
-
-    Eigen::Vector3f euler_angles = rotation.eulerAngles(2, 1, 0) * 180 / M_PI;
-
-    printf("\n");
-    printf("    | %6.3f %6.3f %6.3f | \n", rotation(0, 0), rotation(0, 1), rotation(0, 2));
-    printf("R = | %6.3f %6.3f %6.3f | \n", rotation(1, 0), rotation(1, 1), rotation(1, 2));
-    printf("    | %6.3f %6.3f %6.3f | \n", rotation(2, 0), rotation(2, 1), rotation(2, 2));
-    printf("\n");
-    cout << "yaw(z) pitch(y) roll(x) = " << euler_angles.transpose() << endl;
-    printf("\n");
-    printf("t = < %0.3f, %0.3f, %0.3f >\n", translation(0), translation(1), translation(2));
-
-    // Save the aligned template for visualization
-    pcl::PointCloud<pcl::PointXYZ> transformed_cloud;
-    // 将模板中保存的点云图进行旋转矩阵变换，把变换结果保存到transformed_cloud
-    pcl::transformPointCloud(*best_template.getPointCloud(), transformed_cloud, best_alignment.final_transformation);
-
-//    pcl::io::savePCDFileBinary("output.pcd", transformed_cloud);
-    // =============================================================================
-
-    pcl::visualization::PCLVisualizer viewer("example");
-    // 设置坐标系系统
-    viewer.addCoordinateSystem(0.5, "cloud", 0);
-    // 设置背景色
-    viewer.setBackgroundColor(0.05, 0.05, 0.05, 0); // Setting background to a dark grey
-
-    // 1. 旋转后的点云rotated --------------------------------
-    pcl::PointCloud<pcl::PointXYZ>::Ptr t_cloud(&transformed_cloud);
-    PCLHandler transformed_cloud_handler(t_cloud, 255, 255, 255);
-    viewer.addPointCloud(t_cloud, transformed_cloud_handler, "transformed_cloud");
-    // 设置渲染属性（点大小）
-    viewer.setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 2, "transformed_cloud");
-
-    // 2. 目标点云target --------------------------------
-    PCLHandler target_cloud_handler(cloud, 255, 100, 100);
-    viewer.addPointCloud(cloud, target_cloud_handler, "target_cloud");
-    // 设置渲染属性（点大小）
-    viewer.setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "target_cloud");
-
-    // 3. 模板点云template --------------------------------
-    PCLHandler template_cloud_handler(cloud, 100, 255, 255);
-    viewer.addPointCloud(best_template.getPointCloud(), template_cloud_handler, "template_cloud");
-    // 设置渲染属性（点大小）
-    viewer.setPointCloudRenderingProperties(pcl::visualization::PCL_VISUALIZER_POINT_SIZE, 1, "template_cloud");
-
-    while (!viewer.wasStopped()) { // Display the visualiser until 'q' key is pressed
-        viewer.spinOnce();
-    }
-
-    return (0);
+	return 0;
 }

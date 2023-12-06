@@ -4,13 +4,13 @@ GlobalLocalization::GlobalLocalization(): Node("localization_node")
 {
     odom_received_ = false;
     global_pc_received_ = false;
-    T_map_to_odom = Eigen::Affine3f::Identity();
-
+    locate_state_.dasourta = false;
+    trans_to_related_origin = Eigen::Affine3f::Identity();
     this->global_pc_init();
     // 创建发布者
     pub_submap = this->create_publisher<sensor_msgs::msg::PointCloud2>("/submap", 1);
-    pub_map_to_odom = this->create_publisher<nav_msgs::msg::Odometry>("/map_to_odom", 1);
-    localization_success_pub = this->create_publisher<std_msgs::msg::Bool>("/localization_success", 1);
+    pub_odom_in_map = this->create_publisher<nav_msgs::msg::Odometry>("/odom_in_map", 1);
+    pub_locate_state = this->create_publisher<std_msgs::msg::Bool>("/locate_state", 1);
 
     // 创建订阅者
     sub_cloud_registered = this->create_subscription<sensor_msgs::msg::PointCloud2>(
@@ -22,7 +22,6 @@ GlobalLocalization::GlobalLocalization(): Node("localization_node")
     timer = this->create_wall_timer(
         std::chrono::milliseconds(static_cast<int>(1000 / FREQ_LOCALIZATION)),
         std::bind(&GlobalLocalization::cb_locate_pos, this));
-
 }
 GlobalLocalization::~GlobalLocalization()
 {
@@ -31,10 +30,10 @@ GlobalLocalization::~GlobalLocalization()
 // 滤去可视范围外保存的点云
 void GlobalLocalization::get_global_map_in_FOV()
 {
-    std::cout << T_map_to_odom.matrix() << std::endl;
+    std::cout << trans_to_related_origin.matrix() << std::endl;
     // 将保存的点云转到lidar坐标系下
     pcl::PointCloud<pcl::PointNormal>::Ptr temp_pc(new pcl::PointCloud<pcl::PointNormal> ());
-    pcl::transformPointCloudWithNormals(*global_pc, *temp_pc, T_map_to_odom);
+    pcl::transformPointCloudWithNormals(*global_pc, *temp_pc, trans_to_related_origin);
 	//创建条件限定下的滤波器
 	pcl::ConditionAnd<pcl::PointNormal>::Ptr range_cond(new pcl::ConditionAnd<pcl::PointNormal>());//创建条件定义对象range_cond
 	//为条件定义对象添加比较算子
@@ -50,13 +49,14 @@ void GlobalLocalization::get_global_map_in_FOV()
 	pcl::ConditionalRemoval<pcl::PointNormal> cr;	//创建滤波器对象
 	cr.setCondition(range_cond);			//用条件定义对象初始化
 	cr.setInputCloud(temp_pc);			//设置待滤波点云
-	cr.setKeepOrganized(false);			//保持点云结构，即有序点云经过滤波后，仍能够保持有序性。(是否保留无效点云数据的位置信息)
-	cr.filter(*global_pc_in_FOV);				//执行滤波，保存滤波结果于cloud_filtered
-    sensor_msgs::msg::PointCloud2 laserCloudmsg;
-    pcl::toROSMsg(*global_pc_in_FOV, laserCloudmsg);
-    laserCloudmsg.header.stamp = this->get_clock()->now();
-    laserCloudmsg.header.frame_id = "body";
-    pub_submap->publish(laserCloudmsg);
+	cr.setKeepOrganized(false);			//不保留无效点云数据的位置信息
+	cr.filter(*global_pc_in_FOV);				//执行滤波，保存滤波结果于global_pc_in_FOV
+
+//     sensor_msgs::msg::PointCloud2 laserCloudmsg;
+//     pcl::toROSMsg(*global_pc_in_FOV, laserCloudmsg);
+//     laserCloudmsg.header.stamp = this->get_clock()->now();
+//     laserCloudmsg.header.frame_id = "body";
+//     pub_submap->publish(laserCloudmsg);
 }
    
 // 回调函数
@@ -67,7 +67,7 @@ void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::S
     if(!global_pc_received_){
         global_pc_received_ = true;
     }
-    pcl::PointCloud<pcl::PointNormal>::Ptr cur_scan_pc (new pcl::PointCloud<pcl::PointNormal>);
+    cur_scan_pc = std::make_shared<pcl::PointCloud<pcl::PointNormal>>();
     pcl::fromROSMsg(*pc_msg, *cur_scan_pc);
 
 }
@@ -75,7 +75,7 @@ void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::S
 void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg) {
     // 处理接收到的Odometry消息
 
-    T_map_to_odom.translation() << 
+    trans_to_related_origin.translation() << 
         (float) msg->pose.pose.position.x,
         (float) msg->pose.pose.position.y,
         (float) msg->pose.pose.position.z;
@@ -85,20 +85,61 @@ void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedP
         (float) msg->pose.pose.orientation.y,
         (float) msg->pose.pose.orientation.z,
         (float) msg->pose.pose.orientation.w);
-    T_map_to_odom.rotate(quat);
+    trans_to_related_origin.rotate(quat);
 
     if(!odom_received_){
         odom_received_ = true;
-        RCLCPP_INFO(this->get_logger(),"Odometry received!");
+        RCLCPP_INFO(this->get_logger(),"Odometry received!");}
 
-    }
 }
 
 void GlobalLocalization::cb_locate_pos()
 {
-    if(odom_received_&global_pc_received_){
+    if(odom_received_&global_pc_received_)
+    {
         RCLCPP_INFO(this->get_logger(),"Global localization by scan-to-map matching......");
+        // 深拷贝
+        pcl::PointCloud<pcl::PointNormal>::Ptr scan_tobe_mapped;
+        scan_tobe_mapped = std::make_shared<pcl::PointCloud<pcl::PointNormal>>(*cur_scan_pc);
+        // 滤去可视范围外的保存的点云地图
         get_global_map_in_FOV();
+        RegistrateResult registrate_coarse_result;
+        registrate_coarse_result = sacCoarseRegister(scan_tobe_mapped,global_pc_in_FOV);
+        // 将SAC粗配准的结果应用到源点云
+        pcl::PointCloud<pcl::PointNormal>::Ptr registrated_scan(new pcl::PointCloud<pcl::PointNormal>());
+        pcl::transformPointCloudWithNormals(*scan_tobe_mapped, *registrated_scan, registrate_coarse_result.transformation);
+        RegistrateResult registrate_fine_result;
+        registrate_fine_result = icpFineRegister(registrated_scan,global_pc_in_FOV);
+        // 全局定位成功才更新map2odom
+        if(registrate_fine_result.fitness_score > LOCALIZATION_TH)
+        {
+            // 最终得到的从当前点云到地图点云的变换矩阵是粗、精配准变换阵的乘积
+            T_odom_in_map = registrate_fine_result.transformation * registrate_coarse_result.transformation;
+            nav_msgs::msg::Odometry odom_in_map;
+            // 提取平移
+            odom_in_map.pose.pose.position.x = T_odom_in_map(0, 3);
+            odom_in_map.pose.pose.position.y = T_odom_in_map(1, 3);
+            odom_in_map.pose.pose.position.z = T_odom_in_map(2, 3);
+
+            // 提取旋转（假设矩阵是齐次变换矩阵）
+            Eigen::Quaternionf quat(Eigen::Matrix3f(T_odom_in_map.block<3, 3>(0, 0)));
+            odom_in_map.pose.pose.orientation.x = quat.x();
+            odom_in_map.pose.pose.orientation.y = quat.y();
+            odom_in_map.pose.pose.orientation.z = quat.z();
+            odom_in_map.pose.pose.orientation.w = quat.w();
+            
+            odom_in_map.header.frame_id = "map";
+            odom_in_map.header.stamp = this->get_clock()->now();
+
+            pub_odom_in_map->publish(odom_in_map);
+            locate_state_.data = true;
+        }
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(),"Locate failed,fitness score: %f",registrate_fine_result.fitness_score);
+            locate_state_.data = false;
+        }
+        pub_locate_state->publish(locate_state_);
     }
 }
 
@@ -127,6 +168,54 @@ void GlobalLocalization::global_pc_init()
     }
 
 }
+
+GlobalLocalization::RegistrateResult GlobalLocalization::sacCoarseRegister
+    (const pcl::PointCloud<pcl::PointNormal>::Ptr& source,
+    const pcl::PointCloud<pcl::PointNormal>::Ptr& target) 
+{
+    // 计算FPFH特征
+    pcl::FPFHEstimationOMP<pcl::PointNormal, pcl::PointNormal, pcl::FPFHSignature33> fpfh;
+    pcl::PointCloud<pcl::FPFHSignature33>::Ptr source_features(new pcl::PointCloud<pcl::FPFHSignature33>());
+    pcl::PointCloud<pcl::FPFHSignature33>::Ptr target_features(new pcl::PointCloud<pcl::FPFHSignature33>());
+    fpfh.setInputCloud(source);
+    fpfh.setInputNormals(source);
+    fpfh.setRadiusSearch(0.05);
+    fpfh.compute(*source_features);
+    fpfh.setInputCloud(target);
+    fpfh.setInputNormals(target);
+    fpfh.compute(*target_features);
+
+    // SAC配准
+    pcl::SampleConsensusPrerejective<pcl::PointNormal, pcl::PointNormal, pcl::FPFHSignature33> sac;
+    sac.setInputSource(source);
+    sac.setSourceFeatures(source_features);
+    sac.setInputTarget(target);
+    sac.setTargetFeatures(target_features);
+    pcl::PointCloud<pcl::PointNormal> aligned;
+    sac.align(aligned);
+
+    RegistrateResult temp_result;
+    temp_result.transformation = sac.getFinalTransformation();
+    temp_result.fitness_score = sac.getFitnessScore();
+    return temp_result;
+}
+
+GlobalLocalization::RegistrateResult GlobalLocalization::icpFineRegister
+    (const pcl::PointCloud<pcl::PointNormal>::Ptr& source,
+    const pcl::PointCloud<pcl::PointNormal>::Ptr& target) 
+{
+    pcl::IterativeClosestPoint<pcl::PointNormal, pcl::PointNormal> icp;
+    icp.setInputSource(source);
+    icp.setInputTarget(target);
+    pcl::PointCloud<pcl::PointNormal> result;
+    icp.align(result);
+
+    RegistrateResult temp_result;
+    temp_result.transformation = icp.getFinalTransformation();
+    temp_result.fitness_score = icp.getFitnessScore();
+    return temp_result;
+}
+
 
 int main(int argc, char **argv)
 {
