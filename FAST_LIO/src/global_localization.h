@@ -42,7 +42,7 @@ private:
     pcl::PointCloud<pcl::PointNormal>::Ptr cur_scan_pc;
     pcl::PointCloud<pcl::PointNormal>::Ptr global_pc;
     pcl::PointCloud<pcl::PointNormal>::Ptr global_pc_in_FOV;
-    Eigen::Affine3d T_map_to_odom = Eigen::Affine3d::Identity();
+    Eigen::Affine3f T_map_to_odom;
     rclcpp::TimerBase::SharedPtr timer;
 
     // 发布者
