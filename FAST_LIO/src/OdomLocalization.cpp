@@ -1,6 +1,7 @@
-#include "global_localization.h"
+// 维护T_map2odom的变换矩阵，以Odometry格式的/map2odom话题发布。
+#include "OdomLocalization.h"
 
-GlobalLocalization::GlobalLocalization(): Node("localization_node")
+OdomLocalization::OdomLocalization(): Node("localization_node")
 {
     odom_received_ = false;
     global_pc_received_ = false;
@@ -10,27 +11,26 @@ GlobalLocalization::GlobalLocalization(): Node("localization_node")
     this->global_pc_init();
     // 创建发布者
     pub_submap = this->create_publisher<sensor_msgs::msg::PointCloud2>("/submap", 1);
-    pub_odom_in_map = this->create_publisher<nav_msgs::msg::Odometry>("/odom_in_map", 1);
+    pub_map2odom = this->create_publisher<nav_msgs::msg::Odometry>("/map2odom", 1);
     pub_locate_state = this->create_publisher<std_msgs::msg::Bool>("/locate_state", 1);
 
     // 创建订阅者
     sub_cloud_registered = this->create_subscription<sensor_msgs::msg::PointCloud2>(
-        "/cloud_registered", 1, std::bind(&GlobalLocalization::cb_save_cur_scan, this, std::placeholders::_1));
+        "/cloud_registered", 1, std::bind(&OdomLocalization::cb_save_cur_scan, this, std::placeholders::_1));
     sub_odometry = this->create_subscription<nav_msgs::msg::Odometry>(
-        "/Odometry", 1, std::bind(&GlobalLocalization::cb_save_cur_odom, this, std::placeholders::_1));
-    RCLCPP_INFO(this->get_logger(), "Create pub&sub Succeed");
+        "/Odometry", 1, std::bind(&OdomLocalization::cb_save_cur_odom, this, std::placeholders::_1));
+    RCLCPP_INFO(this->get_logger(), "Create pub&sub Succeed. Waiting for Odometry&cloud_registered.");
 
     timer = this->create_wall_timer(
-        500ms,
-        std::bind(&GlobalLocalization::cb_locate_odom, this));
+        1000ms,
+        std::bind(&OdomLocalization::cb_locate_odom, this));
     
-
 }
-GlobalLocalization::~GlobalLocalization()
+OdomLocalization::~OdomLocalization()
 {
 }
 
-void GlobalLocalization::timer_callback()
+void OdomLocalization::timer_callback()
 {
         std::cout << "-------timer callback!-----------" << std::endl;
         // do something else;
@@ -38,7 +38,7 @@ void GlobalLocalization::timer_callback()
 } 
 
 // 滤去可视范围外保存的点云，即雷达当前位置应该看到什么样子的点云数据
-void GlobalLocalization::get_global_map_in_FOV()
+void OdomLocalization::get_global_map_in_FOV()
 {
     // 将map保存的点云转到lidar坐标系下
     pcl::PointCloud<pcl::PointNormal>::Ptr temp_pc(new pcl::PointCloud<pcl::PointNormal> ());
@@ -69,7 +69,7 @@ void GlobalLocalization::get_global_map_in_FOV()
 }
    
 // 回调函数
-void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr pc_msg) {
+void OdomLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr pc_msg) {
     // 处理接收到的PointCloud2消息
     // 将ROS的PointCloud2转换为PCL的PointCloud并存储在类内
     // 此外初始化T_map2odom
@@ -84,7 +84,7 @@ void GlobalLocalization::cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::S
     }
 }
 
-void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg) {
+void OdomLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedPtr msg) {
     // 处理接收到的Odometry消息
 
     T_odom2body.translation() << 
@@ -105,7 +105,7 @@ void GlobalLocalization::cb_save_cur_odom(const nav_msgs::msg::Odometry::SharedP
 
 }
 
-void GlobalLocalization::cb_locate_odom()
+void OdomLocalization::cb_locate_odom()
 {
     if(odom_received_&global_pc_received_)
     {
@@ -133,36 +133,36 @@ void GlobalLocalization::cb_locate_odom()
         if(registrate_fine_result.fitness_score < AVERAGE_DISTANTCE)
         {
             T_map2odom = registrate_fine_result.transformation;
-            nav_msgs::msg::Odometry odom_in_map;
+            nav_msgs::msg::Odometry msg_T_map2odom;
             // 提取平移
-            odom_in_map.pose.pose.position.x = T_map2odom(0, 3);
-            odom_in_map.pose.pose.position.y = T_map2odom(1, 3);
-            odom_in_map.pose.pose.position.z = T_map2odom(2, 3);
+            Eigen::Vector3f translation = T_map2odom.translation();
+            msg_T_map2odom.pose.pose.position.x = translation.x();
+            msg_T_map2odom.pose.pose.position.y = translation.y();
+            msg_T_map2odom.pose.pose.position.z = translation.z();;
 
-            // 提取旋转（假设矩阵是齐次变换矩阵）
-            Eigen::Quaternionf quat(Eigen::Matrix3f(T_map2odom.block<3, 3>(0, 0)));
-            odom_in_map.pose.pose.orientation.x = quat.x();
-            odom_in_map.pose.pose.orientation.y = quat.y();
-            odom_in_map.pose.pose.orientation.z = quat.z();
-            odom_in_map.pose.pose.orientation.w = quat.w();
+            Eigen::Quaternionf quat(T_map2odom.rotation());
+            msg_T_map2odom.pose.pose.orientation.x = quat.x();
+            msg_T_map2odom.pose.pose.orientation.y = quat.y();
+            msg_T_map2odom.pose.pose.orientation.z = quat.z();
+            msg_T_map2odom.pose.pose.orientation.w = quat.w();
             
-            odom_in_map.header.frame_id = "map";
-            odom_in_map.header.stamp = this->get_clock()->now();
+            msg_T_map2odom.header.frame_id = "map";
+            msg_T_map2odom.header.stamp = this->get_clock()->now();
 
-            pub_odom_in_map->publish(odom_in_map);
+            pub_map2odom->publish(msg_T_map2odom);
             RCLCPP_INFO(this->get_logger(),"Locate succeed,fitness score: %f",registrate_fine_result.fitness_score);
             locate_state_.data = true;
         }
-        // else
-        // {
-        //     RCLCPP_ERROR(this->get_logger(),"Locate failed,fitness score: %f",registrate_fine_result.fitness_score);
-        //     locate_state_.data = false;
-        // }
-        // pub_locate_state->publish(locate_state_);
+        else
+        {
+            RCLCPP_ERROR(this->get_logger(),"Locate failed,fitness score: %f",registrate_fine_result.fitness_score);
+            locate_state_.data = false;
+        }
+        pub_locate_state->publish(locate_state_);
     }
 }
 
-void GlobalLocalization::global_pc_init()
+void OdomLocalization::global_pc_init()
 {   
     string file_name = string("scans.pcd");
     string all_points_dir(string(string(ROOT_DIR) + "PCD/") + file_name);
@@ -189,7 +189,7 @@ void GlobalLocalization::global_pc_init()
 
 }
 
-Eigen::Matrix4f GlobalLocalization::sacCoarseRegister
+Eigen::Matrix4f OdomLocalization::sacCoarseRegister
     (const pcl::PointCloud<pcl::PointNormal>::Ptr& source,
     const pcl::PointCloud<pcl::PointNormal>::Ptr& target) 
 {
@@ -217,7 +217,7 @@ Eigen::Matrix4f GlobalLocalization::sacCoarseRegister
     return sac.getFinalTransformation();
 }
 
-GlobalLocalization::RegistrateResult GlobalLocalization::icpFineRegister
+OdomLocalization::RegistrateResult OdomLocalization::icpFineRegister
     (const pcl::PointCloud<pcl::PointNormal>::Ptr& source,
     const pcl::PointCloud<pcl::PointNormal>::Ptr& target,
     const Eigen::Matrix4f &initial_guess) 
@@ -239,7 +239,7 @@ int main(int argc, char **argv)
 {
     rclcpp::init(argc, argv);
     /*创建对应节点的共享指针对象*/
-    auto node = std::make_shared<GlobalLocalization>();
+    auto node = std::make_shared<OdomLocalization>();
 
     /* 运行节点，并检测退出信号*/
     rclcpp::spin(node);

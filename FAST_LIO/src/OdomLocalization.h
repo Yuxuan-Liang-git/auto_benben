@@ -25,7 +25,7 @@ const float FREQ_LOCALIZATION = 0.5;
 const float AVERAGE_DISTANTCE = 2;
 const float FOV_FAR = 70.0;
 
-class GlobalLocalization: public rclcpp::Node
+class OdomLocalization: public rclcpp::Node
 {
   public:
     struct RegistrateResult{
@@ -33,8 +33,8 @@ class GlobalLocalization: public rclcpp::Node
       double fitness_score; 
     };
  
-    GlobalLocalization();
-    ~GlobalLocalization();
+    OdomLocalization();
+    ~OdomLocalization();
 
 private:
     void cb_save_cur_scan(const sensor_msgs::msg::PointCloud2::SharedPtr pc_msg);
@@ -72,7 +72,7 @@ private:
 
     // 发布者
     rclcpp::Publisher<sensor_msgs::msg::PointCloud2>::SharedPtr pub_submap;
-    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_odom_in_map;
+    rclcpp::Publisher<nav_msgs::msg::Odometry>::SharedPtr pub_map2odom;
     rclcpp::Publisher<std_msgs::msg::Bool>::SharedPtr pub_locate_state;
 
     // 订阅者

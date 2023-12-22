@@ -99,7 +99,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
 ament_export_dependencies(rosidl_default_runtime)
 
 add_executable(fastlio_mapping src/laserMapping.cpp include/ikd-Tree/ikd_Tree.cpp src/preprocess.cpp)
-add_executable(global_localization src/global_localization.cpp)
+add_executable(OdomLocalization src/OdomLocalization.cpp)
 
 target_include_directories(fastlio_mapping PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/include>
@@ -107,7 +107,7 @@ target_include_directories(fastlio_mapping PUBLIC
   ${PCL_INCLUDE_DIRS}
 )
 target_link_libraries(fastlio_mapping ${PCL_LIBRARIES} ${PYTHON_LIBRARIES} Eigen3::Eigen)
-target_link_libraries(global_localization ${PCL_LIBRARY_DIRS})
+target_link_libraries(OdomLocalization ${PCL_LIBRARY_DIRS})
 
 target_include_directories(fastlio_mapping PRIVATE ${PYTHON_INCLUDE_DIRS})
 
@@ -124,22 +124,22 @@ else()
 endif()
 if($ENV{ROS_DISTRO} IN_LIST EOL_LIST)
   # Custommsg to support foxy & galactic
-  rosidl_target_interfaces(global_localization 
+  rosidl_target_interfaces(OdomLocalization 
     ${PROJECT_NAME} "rosidl_typesupport_cpp")
 else()
   rosidl_get_typesupport_target(cpp_typesupport_target
     ${PROJECT_NAME} "rosidl_typesupport_cpp")
-  target_link_libraries(global_localization ${cpp_typesupport_target})
+  target_link_libraries(OdomLocalization ${cpp_typesupport_target})
 endif()
 
 ament_target_dependencies(fastlio_mapping ${dependencies})
-ament_target_dependencies(global_localization ${dependencies})
+ament_target_dependencies(OdomLocalization ${dependencies})
 
 # ---------------- Install --------------- #
 install(TARGETS fastlio_mapping
   DESTINATION lib/${PROJECT_NAME}
 )
-install(TARGETS global_localization
+install(TARGETS OdomLocalization
   DESTINATION lib/${PROJECT_NAME}
 )
 
@@ -151,11 +151,12 @@ install(
 # # Install Python modules
 # ament_python_install_package(${PROJECT_NAME})
 
-# Install Python executables
-install(PROGRAMS
-  scripts/global_localization.py
-  scripts/global_map_pub.py
-  DESTINATION lib/${PROJECT_NAME}
-)
+# # Install Python executables
+# install(PROGRAMS
+#   scripts/OdomLocalization.py
+#   scripts/global_map_pub.py
+#   scripts/bag_record.py
+#   DESTINATION lib/${PROJECT_NAME}
+# )
 
 ament_package()
